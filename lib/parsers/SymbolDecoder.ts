@@ -302,6 +302,7 @@ export class SymbolDecoder {
 		target.background = target.border;
 
 		target.multiline = (tag.flags & TextFlags.Multiline) ? true : false;
+		target.displayAsPassword = !!(tag.flags & TextFlags.Password);
 		target.wordWrap = (tag.flags & TextFlags.WordWrap) ? true : false;
 		target.selectable = tag.flags ? !(tag.flags & TextFlags.NoSelect) : false;
 
