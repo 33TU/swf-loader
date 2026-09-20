@@ -84,6 +84,7 @@ const enum SWFParserProgressState {
 	WAITING_FOR_FACTORY,
 	WAITING_FOR_DEPENDENCY,
 	FACTORY_AVAILABLE,
+	DECODING_AWAY_SYMBOLS,
 	FINISHED
 }
 const enum SWF_ENCRYPTED_TAGS {
@@ -246,9 +247,7 @@ export class SWFParser extends ParserBase {
 
 		this.externalDependenciesCount--;
 		if (this.externalDependenciesCount == 0) {
-			this.parseSymbolsToAwayJS();
-			this._progressState = SWFParserProgressState.FINISHED;
-			this.finishParsing();
+			this.finishSymbols();
 		}
 
 	}
@@ -264,9 +263,7 @@ export class SWFParser extends ParserBase {
 		//console.log("resolveDependencyFailure", resourceDependency);
 		this.externalDependenciesCount--;
 		if (this.externalDependenciesCount == 0) {
-			this.parseSymbolsToAwayJS();
-			this._progressState = SWFParserProgressState.FINISHED;
-			this.finishParsing();
+			this.finishSymbols();
 		}
 
 	}
@@ -410,12 +407,7 @@ export class SWFParser extends ParserBase {
 			this._progressState = SWFParserProgressState.WAITING_FOR_DEPENDENCY;
 			this.pauseAndRetrieveDependencies();
 		} else {
-			this.parseSymbolsToAwayJS();
-			this._progressState = SWFParserProgressState.FINISHED;
-
-			Stat.rec('parser').rec('symbols').end();
-
-			this.finishParsing();
+			this.finishSymbols();
 		}
 	}
 
@@ -432,7 +424,18 @@ export class SWFParser extends ParserBase {
 		}
 	}
 
-	public parseSymbolsToAwayJS() {
+	private finishSymbols(): void {
+		this._progressState = SWFParserProgressState.DECODING_AWAY_SYMBOLS;
+		this.parseSymbolsToAwayJS().then(() => {
+			this._progressState = SWFParserProgressState.FINISHED;
+			Stat.rec('parser').rec('symbols').end();
+			this.finishParsing();
+		}, error => {
+			this.dieWithError('SWF symbol decoding failed: ' + String(error));
+		});
+	}
+
+	public async parseSymbolsToAwayJS(): Promise<void> {
 
 		Stat.rec('parser').rec('symbols').rec('away').begin();
 
@@ -447,67 +450,74 @@ export class SWFParser extends ParserBase {
 		this._lockFinalize = true;
 
 		console.debug('[Away Symbols] Start');
-		for (const entry of this.dictionary) {
-			if (!entry) {
-				continue;
+		let deadline = performance.now() + 8;
+		try {
+			for (const entry of this.dictionary) {
+				if (!entry) {
+					continue;
+				}
+
+				index++;
+				if (step && !(index % 100)) {
+					console.debug(`[Away Symbols] Decoded (${index}/${total}), ${(100 * index / total) | 0}`);
+				}
+
+				const symbol = this.getSymbol(entry.id) as ISymbol;
+
+				//try {
+				const asset: IAsset = this._symbolDecoder.createAwaySymbol(symbol, null, null);
+				/*
+				} catch(e) {
+					console.warn("[SWF Symbol parser error]", e);
+				}
+				*/
+
+				// Preserve dependency order and shared factory state, but give input
+				// and rendering a chance to run between short decoding batches.
+				if (performance.now() >= deadline) {
+					await new Promise<void>(resolve => setTimeout(resolve, 0));
+					deadline = performance.now() + 8;
+				}
+
+				if (!asset) {
+					continue;
+				}
+
+				// for FONT we finalize by name
+				if (symbol.type !== SYMBOL_TYPE.FONT) {
+					assetsToFinalize[entry.id] = asset;
+				} else {
+					// invalid, because maybe a more that 1 fonts table to same name
+					assetsToFinalize[symbol.name] = symbol.away;
+				}
 			}
 
-			index++;
-			if (step && !(index % 100)) {
-				console.debug(`[Away Symbols] Decoded (${index}/${total}), ${(100 * index / total) | 0}`);
+			const rootSymbol: any = this.dictionary[0] || {
+				id: 0,
+				className: this.symbolClassesMap[0]
+			};
+
+			noTimelineDebug || console.log('start parsing root-timeline: ', rootSymbol);
+			const rootAsset = this._symbolDecoder.framesToTimeline(null, rootSymbol, this._swfFile.frames, null, null);
+			rootAsset.isAVMScene = true;
+
+			// manualy send finalisation event after parsing
+			for (const key in assetsToFinalize) {
+				this.finalizeAsset(assetsToFinalize[key]);
 			}
 
-			const symbol = this.getSymbol(entry.id) as ISymbol;
-
-			//try {
-			const asset: IAsset = this._symbolDecoder.createAwaySymbol(symbol, null, null);
-			/*
-			} catch(e) {
-				console.warn("[SWF Symbol parser error]", e);
+			if (this._swfFile.sceneAndFrameLabelData) {
+				rootAsset.scenes = this._swfFile.sceneAndFrameLabelData.scenes;
 			}
-			*/
+			this.finalizeAsset(rootAsset, 'scene');
+			//console.log("root-timeline: ", awayMc);
+			//console.log("AwayJS loaded SWF with "+ dictionary.length+" symbols", this._swfFile.sceneAndFrameLabelData);
 
-			if (!asset) {
-				continue;
-			}
-
-			// for FONT we finalize by name
-			if (symbol.type !== SYMBOL_TYPE.FONT) {
-				assetsToFinalize[entry.id] = asset;
-			} else {
-				// invalid, because maybe a more that 1 fonts table to same name
-				assetsToFinalize[symbol.name] = symbol.away;
-			}
+		} finally {
+			this._lockFinalize = false;
+			this._symbolDecoder.reqursive = true;
+			Stat.rec('parser').rec('symbols').rec('away').end();
 		}
-
-		const rootSymbol: any = this.dictionary[0] || {
-			id: 0,
-			className: this.symbolClassesMap[0]
-		};
-
-		noTimelineDebug || console.log('start parsing root-timeline: ', rootSymbol);
-		const rootAsset = this._symbolDecoder.framesToTimeline(null, rootSymbol, this._swfFile.frames, null, null);
-		rootAsset.isAVMScene = true;
-
-		// manualy send finalisation event after parsing
-		for (const key in assetsToFinalize) {
-			this.finalizeAsset(assetsToFinalize[key]);
-		}
-
-		if (this._swfFile.sceneAndFrameLabelData) {
-			rootAsset.scenes = this._swfFile.sceneAndFrameLabelData.scenes;
-		}
-		this.finalizeAsset(rootAsset, 'scene');
-		//console.log("root-timeline: ", awayMc);
-		//console.log("AwayJS loaded SWF with "+ dictionary.length+" symbols", this._swfFile.sceneAndFrameLabelData);
-
-		// unlock
-		this._lockFinalize = false;
-
-		// enable recursive parser, finalizer will invoked to for nested symbols that not exist
-		this._symbolDecoder.reqursive = true;
-
-		Stat.rec('parser').rec('symbols').rec('away').end();
 	}
 
 	public textFormatAlignMap: string[] = [
