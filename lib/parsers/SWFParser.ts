@@ -706,9 +706,18 @@ export class SWFParser extends ParserBase {
 				throw new Error(error + ' from:' + this.id);
 			};
 
-			const subb = initialBytes.subarray(8);
+			// LZMA's SWF mode reads lengths and properties from the full SWF header.
+			// Deflate receives only the compressed body following the eight-byte header.
+			const subb = swf.compression === CompressionMethod.LZMA
+				? initialBytes
+				: initialBytes.subarray(8);
 
 			this._decompressor.push(subb);
+			// LZMA may retain its final output until the input is explicitly closed.
+			if (swf.compression === CompressionMethod.LZMA
+				&& swf.bytesLoaded === swf.bytesTotal && this._decompressor) {
+				this._decompressor.close();
+			}
 
 		} else {
 			//console.log("_readHeaderAndInitialize isUncompressed");
