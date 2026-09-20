@@ -279,9 +279,14 @@ export class SymbolDecoder {
 			this.createAwaySymbol(symbol.tag.fontId) : this.factory.awaySymbols[symbol.tag.fontId]) as any;
 
 		if (flashFont) {
-			newTextFormat.font = flashFont.away;
+			// EditText identifies a font family/style, unlike static text whose
+			// glyph indices belong to a particular DefineFont. Later definitions
+			// of the same family can contain only the authoring placeholder text.
+			const font = (symbol.tag.flags & TextFlags.UseOutlines) ?
+				DefaultFontManager.getFont(flashFont.name, this.parser.fileName) : flashFont.away;
+			newTextFormat.font = font || flashFont.away;
 			newTextFormat.font_table = <TesselatedFontTable>
-				flashFont.away.get_font_table(flashFont.fontStyleName, TesselatedFontTable.assetType);
+				newTextFormat.font.get_font_table(flashFont.fontStyleName, TesselatedFontTable.assetType);
 		}
 
 		const tag = symbol.tag;
