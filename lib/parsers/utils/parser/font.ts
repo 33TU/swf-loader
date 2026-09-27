@@ -330,8 +330,13 @@ export function defineFont(tag: FontTag, ns: string): any {
 			record = records[j];
 			if (record.type) {
 				if (segmentIndex < 0) {
+					// Edges before any move start at the pen's origin; encoders may
+					// omit a move to (0, 0). Without an explicit move the contour
+					// began at the glyph space's top-left corner instead (the
+					// baseline is offset by the ascent), adding a stray vertex:
+					// Arial Bold's "X" drew a wedge across its upper half.
 					segmentIndex = 0;
-					segments[segmentIndex] = { data: [], commands: [], xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
+					segments[segmentIndex] = { data: [x, y], commands: [1], xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
 				}
 				if (record.flags & ShapeRecordFlags.IsStraight) {
 					segments[segmentIndex].commands.push(2);
